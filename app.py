@@ -170,4 +170,4 @@ if __name__ == "__main__":
         loop_thread.start()
         print("🔄 Loop automático iniciado en segundo plano")
 
-    ft.app(target=main, view=ft.WEB_VIEW, port=int(os.environ.get("PORT", 8000)))
+    ft.app(target=main, port=int(os.environ.get("PORT", 8000)))
