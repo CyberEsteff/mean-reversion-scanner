@@ -169,5 +169,12 @@ if __name__ == "__main__":
         loop_thread = threading.Thread(target=lambda: asyncio.run(auto_scan_loop()), daemon=True)
         loop_thread.start()
         print("🔄 Loop automático iniciado en segundo plano")
+    # Usar run_app para modo web en Render
+    import flet.web
+    flet.web.run_app(
+        target=main,
+        port=int(os.environ.get("PORT", 8000)),
+        host="0.0.0.0"
+    )
 
     ft.app(target=main, port=int(os.environ.get("PORT", 8000)))
