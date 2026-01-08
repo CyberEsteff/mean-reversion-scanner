@@ -3,47 +3,49 @@ import pandas as pd
 import asyncio
 import os
 import threading
-from bybit.api import HTTP
+import requests
 from datetime import datetime, timezone
 import ta as ta_lib
 
 # === CONFIGURACIÓN ===
 SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'RENDERUSDT']
-from bybit.api import HTTP
-client = HTTP()  # Bybit sin API key
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # === FUNCIONES TÉCNICAS ===
 def fetch_closed_1h_candles(symbol, limit=50):
-    """Obtiene velas 1H CERRADAS de Bybit"""
+    """Obtiene velas 1H CERRADAS de Bybit API pública (sin librerías)"""
     try:
-        response = client.get_kline(
-            category="spot",
-            symbol=symbol,
-            interval="60",  # 1H
-            limit=limit + 1
-        )
-        if not response['result']['list']:
+        url = "https://api.bybit.com/v5/market/kline"
+        params = {
+            "category": "spot",
+            "symbol": symbol,
+            "interval": "60",  # 1H
+            "limit": limit + 1
+        }
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        if data.get("retCode") != 0 or not data.get("result", {}).get("list"):
             return None
         
-        klines = response['result']['list']
+        klines = data["result"]["list"]
         df = pd.DataFrame(klines, columns=[
-            'open_time', 'open', 'high', 'low', 'close', 'volume',
-            'turnover', 'timestamp'
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'turnover'
         ])
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = pd.to_numeric(df[col])
         
-        df['open_time'] = pd.to_numeric(df['open_time'])
-        df['close_time'] = df['open_time'] + 3600000  # 1 hora en ms
-        df['timestamp'] = pd.to_datetime(df['open_time'], unit='ms')
+        df['timestamp'] = pd.to_numeric(df['timestamp'])
+        df['close_time'] = df['timestamp'] + 3600000  # 1 hora en ms
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         
         now = int(datetime.now(timezone.utc()).timestamp() * 1000)
         df = df[df['close_time'] < now].tail(limit)
         return df if len(df) >= 2 else None
     except Exception as e:
-        print(f"Error Bybit: {e}")
+        print(f"Error Bybit API: {e}")
         return None
 
 def detect_signal_with_projection(df):
