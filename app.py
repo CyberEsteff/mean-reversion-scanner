@@ -3,30 +3,46 @@ import pandas as pd
 import asyncio
 import os
 import threading
-from binance.client import Client
+from bybit import HTTP
 from datetime import datetime, timezone
 import ta as ta_lib
 
 # === CONFIGURACIÓN ===
 SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'RENDERUSDT']
-client = Client(api_key=None, api_secret=None)
+client = HTTP()  # Bybit sin API key
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === FUNCIONES TÉCNICAS (igual que antes) ===
+# === FUNCIONES TÉCNICAS ===
 def fetch_closed_1h_candles(symbol, limit=50):
+    """Obtiene velas 1H CERRADAS de Bybit"""
     try:
-        klines = client.get_klines(symbol=symbol, interval=client.KLINE_INTERVAL_1HOUR, limit=limit + 1)
+        response = client.get_kline(
+            category="spot",
+            symbol=symbol,
+            interval="60",  # 1H
+            limit=limit + 1
+        )
+        if not response['result']['list']:
+            return None
+        
+        klines = response['result']['list']
         df = pd.DataFrame(klines, columns=[
             'open_time', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'qav', 'num_trades', 'taker_base', 'taker_quote', 'ignore'
+            'turnover', 'timestamp'
         ])
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = pd.to_numeric(df[col])
+        
+        df['open_time'] = pd.to_numeric(df['open_time'])
+        df['close_time'] = df['open_time'] + 3600000  # 1 hora en ms
+        df['timestamp'] = pd.to_datetime(df['open_time'], unit='ms')
+        
         now = int(datetime.now(timezone.utc()).timestamp() * 1000)
         df = df[df['close_time'] < now].tail(limit)
         return df if len(df) >= 2 else None
-    except Exception:
+    except Exception as e:
+        print(f"Error Bybit: {e}")
         return None
 
 def detect_signal_with_projection(df):
@@ -90,9 +106,8 @@ async def send_telegram_alert(signal):
     except Exception as e:
         print(f"Error Telegram: {e}")
 
-# === LOOP AUTOMÁTICO (corre en segundo plano) ===
+# === LOOP AUTOMÁTICO ===
 async def auto_scan_loop():
-    """Escanea cada hora y envía alertas automáticas"""
     while True:
         print("🔍 Auto-scan iniciado...")
         for symbol in SYMBOLS:
@@ -104,9 +119,9 @@ async def auto_scan_loop():
                     print(f"✅ Señal detectada: {symbol}")
                     await send_telegram_alert(signal)
         print("😴 Próximo escaneo en 1 hora...")
-        await asyncio.sleep(3600)  # 1 hora
+        await asyncio.sleep(3600)
 
-# === INTERFAZ WEB (modo manual) ===
+# === INTERFAZ WEB ===
 def main(page: ft.Page):
     page.title = "Mean Reversion Scanner"
     page.scroll = "auto"
@@ -122,7 +137,7 @@ def main(page: ft.Page):
             signal = detect_signal_with_projection(df)
             if signal:
                 signal['symbol'] = symbol
-                asyncio.run(send_telegram_alert(signal))  # alerta manual
+                asyncio.run(send_telegram_alert(signal))
                 e = signal['entries']
                 p = signal['projections']
                 card = ft.Card(content=ft.Container(
@@ -145,13 +160,11 @@ def main(page: ft.Page):
         results_col
     )
 
-# === EJECUCIÓN PRINCIPAL ===
+# === EJECUCIÓN ===
 if __name__ == "__main__":
-    # Iniciar el loop automático en segundo plano
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         loop_thread = threading.Thread(target=lambda: asyncio.run(auto_scan_loop()), daemon=True)
         loop_thread.start()
         print("🔄 Loop automático iniciado en segundo plano")
 
-    # Iniciar la app web
     ft.app(target=main, view=ft.WEB_BROWSER, port=int(os.environ.get("PORT", 8000)))
