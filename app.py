@@ -3,12 +3,13 @@ import pandas as pd
 import asyncio
 import os
 import threading
-from bybit import HTTP
+from bybit.api import HTTP
 from datetime import datetime, timezone
 import ta as ta_lib
 
 # === CONFIGURACIÓN ===
 SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'RENDERUSDT']
+from bybit.api import HTTP
 client = HTTP()  # Bybit sin API key
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
