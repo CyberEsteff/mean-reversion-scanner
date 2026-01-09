@@ -1,4 +1,6 @@
-import flet as ft
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 import pandas as pd
 import asyncio
 import os
@@ -12,35 +14,21 @@ SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'RENDERUSDT']
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === FUNCIONES TÉCNICAS ===
+# === FUNCIONES TÉCNICAS (igual que antes) ===
 def fetch_closed_1h_candles(symbol, limit=50):
-    """Obtiene velas 1H CERRADAS de Bybit API pública (sin librerías)"""
     try:
         url = "https://api.bybit.com/v5/market/kline"
-        params = {
-            "category": "spot",
-            "symbol": symbol,
-            "interval": "60",  # 1H
-            "limit": limit + 1
-        }
+        params = {"category": "spot", "symbol": symbol, "interval": "60", "limit": limit + 1}
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
-        
         if data.get("retCode") != 0 or not data.get("result", {}).get("list"):
             return None
-        
         klines = data["result"]["list"]
-        df = pd.DataFrame(klines, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'turnover'
-        ])
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'])
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = pd.to_numeric(df[col])
-        
         df['timestamp'] = pd.to_numeric(df['timestamp'])
-        df['close_time'] = df['timestamp'] + 3600000  # 1 hora en ms
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        
+        df['close_time'] = df['timestamp'] + 3600000
         now = int(datetime.now(timezone.utc()).timestamp() * 1000)
         df = df[df['close_time'] < now].tail(limit)
         return df if len(df) >= 2 else None
@@ -65,116 +53,69 @@ def detect_signal_with_projection(df):
     price = curr['close']
     bb_low = curr['bb_low']
     sma20 = curr['sma20']
-    rsi = curr['rsi']
-    entry_aggressive = price
-    entry_technical = bb_low
-    entry_conservative = bb_low * 0.995
-
-    def calc_projection(entry):
-        return (sma20 - entry) / entry * 100 if entry > 0 else 0
+    entry_tech = bb_low
+    proj = (sma20 - bb_low) / bb_low * 100
 
     return {
         'symbol': "DUMMY",
         'price': price,
         'bb_low': bb_low,
         'sma20': sma20,
-        'rsi': rsi,
-        'entries': {
-            'aggressive': entry_aggressive,
-            'technical': entry_technical,
-            'conservative': entry_conservative
-        },
-        'projections': {
-            'aggressive': calc_projection(entry_aggressive),
-            'technical': calc_projection(entry_technical),
-            'conservative': calc_projection(entry_conservative)
-        },
-        'target_price': sma20
+        'rsi': curr['rsi'],
+        'entry_technical': entry_tech,
+        'projection': proj
     }
 
-# === TELEGRAM ===
 async def send_telegram_alert(signal):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
-        from telegram import Bot
-        bot = Bot(token=TELEGRAM_TOKEN)
-        msg = (
-            f"🟢 ¡Nueva señal!\n{signal['symbol']}\n"
-            f"Entrada técnica: {signal['entries']['technical']:.4f}\n"
-            f"Rebote: {signal['projections']['technical']:+.1f}%\n"
-            f"Objetivo: {signal['target_price']:.4f}"
-        )
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        msg = f"🟢 ¡Nueva señal!\n{signal['symbol']}\nEntrada: {signal['entry_technical']:.4f}\nRebote: {signal['projection']:+.1f}%\nObjetivo: {signal['sma20']:.4f}"
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
     except Exception as e:
-        print(f"Error Telegram: {e}")
+        print(f"Telegram error: {e}")
 
-# === LOOP AUTOMÁTICO ===
-async def auto_scan_loop():
-    while True:
-        print("🔍 Auto-scan iniciado...")
-        for symbol in SYMBOLS:
-            df = fetch_closed_1h_candles(symbol)
-            if df is not None:
-                signal = detect_signal_with_projection(df)
-                if signal:
-                    signal['symbol'] = symbol
-                    print(f"✅ Señal detectada: {symbol}")
-                    await send_telegram_alert(signal)
-        print("😴 Próximo escaneo en 1 hora...")
-        await asyncio.sleep(3600)
+# === APP WEB ===
+app = FastAPI()
+templates = Jinja2Templates(directory=".")
 
-# === INTERFAZ WEB ===
-def main(page: ft.Page):
-    page.title = "Mean Reversion Scanner"
-    page.scroll = "auto"
-    results_col = ft.Column()
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
-    def on_scan(e):
-        results_col.controls.clear()
-        for symbol in SYMBOLS:
-            df = fetch_closed_1h_candles(symbol)
-            if df is None:
-                results_col.controls.append(ft.Text(f"⚠️ {symbol}: Sin datos", color="orange"))
-                continue
-            signal = detect_signal_with_projection(df)
-            if signal:
-                signal['symbol'] = symbol
-                asyncio.run(send_telegram_alert(signal))
-                e = signal['entries']
-                p = signal['projections']
-                card = ft.Card(content=ft.Container(
-                    content=ft.Column([
-                        ft.Text(f"🟢 {symbol}", color="green800", weight="bold"),
-                        ft.Text(f"Precio: {signal['price']:.4f} | RSI: {signal['rsi']:.1f}"),
-                        ft.Text(f"• Técnica: {e['technical']:.4f} → {p['technical']:+.1f}%"),
-                        ft.Text(f"🎯 Objetivo: {signal['target_price']:.4f}", color="blue800")
-                    ]),
-                    padding=10
-                ))
-                results_col.controls.append(card)
-            else:
-                results_col.controls.append(ft.Text(f"❌ {symbol}: Sin señal", color="red700"))
-        page.update()
-
-    page.add(
-        ft.Text("Mean Reversion Scanner", size=24, weight="bold"),
-        ft.ElevatedButton("🔍 Escanear Ahora", on_click=on_scan),
-        results_col
-    )
-
-# === EJECUCIÓN ===
-if __name__ == "__main__":
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        loop_thread = threading.Thread(target=lambda: asyncio.run(auto_scan_loop()), daemon=True)
-        loop_thread.start()
-        print("🔄 Loop automático iniciado en segundo plano")
-    # Usar run_app para modo web en Render
-    import flet.web
-    flet.web.run_app(
-        target=main,
-        port=int(os.environ.get("PORT", 8000)),
-        host="0.0.0.0"
-    )
-
-    ft.app(target=main, port=int(os.environ.get("PORT", 8000)))
+@app.get("/scan", response_class=HTMLResponse)
+async def scan(request: Request):
+    results = []
+    for symbol in SYMBOLS:
+        df = fetch_closed_1h_candles(symbol)
+        if df is None:
+            results.append({"symbol": symbol, "status": "error"})
+            continue
+        signal = detect_signal_with_projection(df)
+        if signal:
+            signal["symbol"] = symbol
+            await send_telegram_alert(signal)
+            results.append({"symbol": symbol, "status": "signal", **signal})
+        else:
+            results.append({"symbol": symbol, "status": "no_signal"})
+    
+    html = '<div style="font-family: Arial; padding: 20px;">'
+    html += '<h2>Mean Reversion Scanner</h2>'
+    html += '<a href="/" style="display: inline-block; margin-bottom: 20px; padding: 8px 16px; background: #007bff; color: white; text-decoration: none; border-radius: 4px;">← Volver</a>'
+    for r in results:
+        if r["status"] == "signal":
+            html += f'''
+            <div style="border: 2px solid #28a745; border-radius: 8px; padding: 12px; margin: 10px 0; background: #f8fff9;">
+                <h3 style="color: #28a745;">🟢 {r["symbol"]}</h3>
+                <p>Precio: {r["price"]:.4f} | RSI: {r["rsi"]:.1f}</p>
+                <p>• Técnica: {r["entry_technical"]:.4f} → Rebote: {r["projection"]:+.1f}%</p>
+                <p><strong>🎯 Objetivo: {r["sma20"]:.4f}</strong></p>
+            </div>
+            '''
+        elif r["status"] == "no_signal":
+            html += f'<p>❌ {r["symbol"]}: Sin señal</p>'
+        else:
+            html += f'<p>⚠️ {r["symbol"]}: Sin datos</p>'
+    html += '</div>'
+    return HTMLResponse(html)
