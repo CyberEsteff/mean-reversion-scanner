@@ -16,11 +16,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # === FUNCIONES TÉCNICAS (igual que antes) ===
 def fetch_closed_1h_candles(symbol, limit=50):
-    """
-    Obtiene datos históricos de CoinGecko (equivalente a velas 1H cerradas).
-    Soporta: BTC, ETH, SOL, RENDER → mapeados a IDs de CoinGecko.
-    """
-    # Mapeo de símbolos a IDs de CoinGecko
     symbol_map = {
         'BTCUSDT': 'bitcoin',
         'ETHUSDT': 'ethereum',
@@ -33,51 +28,41 @@ def fetch_closed_1h_candles(symbol, limit=50):
     
     coin_id = symbol_map[symbol]
     try:
-        # CoinGecko: obtener datos por horas (máx 90 días, pero usamos últimos 50)
+        # Obtener precios por hora (últimos ~50 horas)
         url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-        params = {
-            "vs_currency": "usd",
-            "days": str(limit // 24 + 2),  # asegurar suficientes datos
-            "interval": "hourly"
-        }
+        params = {"vs_currency": "usd", "hours": limit + 5}
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
         
         if "prices" not in data or len(data["prices"]) < 2:
             return None
         
-        # Extraer precios (timestamp, precio)
         prices = data["prices"]
-        volumes = data.get("total_volumes", [[p[0], 0] for p in prices])
-        
-        # Crear DataFrame con formato similar a Binance
         df_data = []
         for i in range(1, len(prices)):
-            timestamp_prev = prices[i-1][0]
-            timestamp_curr = prices[i][0]
-            open_price = prices[i-1][1]
-            high_price = max(prices[i-1][1], prices[i][1])
-            low_price = min(prices[i-1][1], prices[i][1])
-            close_price = prices[i][1]
-            volume = volumes[i][1] if i < len(volumes) else 0
-            
-            # Asegurar que el intervalo sea ~1 hora (3600000 ms)
-            if timestamp_curr - timestamp_prev >= 3500000:
+            ts_prev = prices[i-1][0]
+            ts_curr = prices[i][0]
+            # Asegurar intervalo de ~1 hora (3600000 ms)
+            if ts_curr - ts_prev >= 3500000:
+                open_price = prices[i-1][1]
+                close_price = prices[i][1]
+                high_price = max(open_price, close_price)
+                low_price = min(open_price, close_price)
                 df_data.append({
-                    'timestamp': timestamp_prev,
+                    'timestamp': ts_prev,
                     'open': open_price,
                     'high': high_price,
                     'low': low_price,
                     'close': close_price,
-                    'volume': volume,
-                    'close_time': timestamp_curr
+                    'volume': 0,  # CoinGecko no da volumen por hora en gratis
+                    'close_time': ts_curr
                 })
         
         if len(df_data) < 2:
             return None
         
         df = pd.DataFrame(df_data[-limit:])
-        for col in ['open', 'high', 'low', 'close', 'volume']:
+        for col in ['open', 'high', 'low', 'close']:
             df[col] = pd.to_numeric(df[col])
         
         now = int(datetime.now(timezone.utc()).timestamp() * 1000)
@@ -85,9 +70,8 @@ def fetch_closed_1h_candles(symbol, limit=50):
         return df if len(df) >= 2 else None
         
     except Exception as e:
-        print(f"Error CoinGecko para {symbol}: {e}")
+        print(f"Error CoinGecko {symbol}: {e}")
         return None
-
 def detect_signal_with_projection(df):
     df = df.copy()
     bb = ta_lib.volatility.BollingerBands(close=df['close'], window=20, window_dev=2)
