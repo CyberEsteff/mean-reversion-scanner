@@ -16,24 +16,76 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # === FUNCIONES TÉCNICAS (igual que antes) ===
 def fetch_closed_1h_candles(symbol, limit=50):
+    """
+    Obtiene datos históricos de CoinGecko (equivalente a velas 1H cerradas).
+    Soporta: BTC, ETH, SOL, RENDER → mapeados a IDs de CoinGecko.
+    """
+    # Mapeo de símbolos a IDs de CoinGecko
+    symbol_map = {
+        'BTCUSDT': 'bitcoin',
+        'ETHUSDT': 'ethereum',
+        'SOLUSDT': 'solana',
+        'RENDERUSDT': 'render-token'
+    }
+    
+    if symbol not in symbol_map:
+        return None
+    
+    coin_id = symbol_map[symbol]
     try:
-        url = "https://api.bybit.com/v5/market/kline"
-        params = {"category": "spot", "symbol": symbol, "interval": "60", "limit": limit + 1}
+        # CoinGecko: obtener datos por horas (máx 90 días, pero usamos últimos 50)
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": str(limit // 24 + 2),  # asegurar suficientes datos
+            "interval": "hourly"
+        }
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
-        if data.get("retCode") != 0 or not data.get("result", {}).get("list"):
+        
+        if "prices" not in data or len(data["prices"]) < 2:
             return None
-        klines = data["result"]["list"]
-        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'])
+        
+        # Extraer precios (timestamp, precio)
+        prices = data["prices"]
+        volumes = data.get("total_volumes", [[p[0], 0] for p in prices])
+        
+        # Crear DataFrame con formato similar a Binance
+        df_data = []
+        for i in range(1, len(prices)):
+            timestamp_prev = prices[i-1][0]
+            timestamp_curr = prices[i][0]
+            open_price = prices[i-1][1]
+            high_price = max(prices[i-1][1], prices[i][1])
+            low_price = min(prices[i-1][1], prices[i][1])
+            close_price = prices[i][1]
+            volume = volumes[i][1] if i < len(volumes) else 0
+            
+            # Asegurar que el intervalo sea ~1 hora (3600000 ms)
+            if timestamp_curr - timestamp_prev >= 3500000:
+                df_data.append({
+                    'timestamp': timestamp_prev,
+                    'open': open_price,
+                    'high': high_price,
+                    'low': low_price,
+                    'close': close_price,
+                    'volume': volume,
+                    'close_time': timestamp_curr
+                })
+        
+        if len(df_data) < 2:
+            return None
+        
+        df = pd.DataFrame(df_data[-limit:])
         for col in ['open', 'high', 'low', 'close', 'volume']:
             df[col] = pd.to_numeric(df[col])
-        df['timestamp'] = pd.to_numeric(df['timestamp'])
-        df['close_time'] = df['timestamp'] + 3600000
+        
         now = int(datetime.now(timezone.utc()).timestamp() * 1000)
         df = df[df['close_time'] < now].tail(limit)
         return df if len(df) >= 2 else None
+        
     except Exception as e:
-        print(f"Error Bybit API: {e}")
+        print(f"Error CoinGecko para {symbol}: {e}")
         return None
 
 def detect_signal_with_projection(df):
